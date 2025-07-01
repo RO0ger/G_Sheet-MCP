@@ -6,7 +6,7 @@ import { sendSlackNotification } from './slack.js';
 export const toolImplementations = {
     gemini_analyze_hypothesis: (args) => analyzeHypothesis(args),
     gsheets_load_hypotheses: () => loadHypotheses(),
-    gsheets_update_hypotheses: (args) => updateHypotheses(args),
+    gsheets_update_hypotheses: (args) => updateHypotheses({ results: args.results || [] }),
     slack_send_notification: (args) => sendSlackNotification(args),
 };
 // JSON schema definitions for the tools

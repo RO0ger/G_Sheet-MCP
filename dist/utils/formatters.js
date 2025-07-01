@@ -7,11 +7,10 @@ class DefaultSlackFormatter {
                     type: "section",
                     text: {
                         type: "mrkdwn",
-                        text: `*Meeting Analysis Complete*\n` +
-                            `Meeting: ${summary.meetingId}\n` +
-                            `Hypotheses: ${summary.totalHypotheses}\n` +
-                            `Validations: ${summary.validations}\n` +
-                            `Duration: ${(summary.duration / 1000).toFixed(1)}s`
+                        text: `*✅ Meeting Analysis Complete*\n\n` +
+                            `*Meeting:* ${summary.meetingId}\n` +
+                            `*Hypotheses Analyzed:* ${summary.processedCount} / ${summary.totalHypotheses}\n` +
+                            `*Duration:* ${(summary.duration / 1000).toFixed(1)}s`
                     }
                 }
             ]

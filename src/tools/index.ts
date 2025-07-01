@@ -7,7 +7,7 @@ import { sendSlackNotification } from './slack.js';
 export const toolImplementations: { [key: string]: (...args: any[]) => Promise<any> } = {
   gemini_analyze_hypothesis: (args: any) => analyzeHypothesis(args),
   gsheets_load_hypotheses: () => loadHypotheses(),
-  gsheets_update_hypotheses: (args: any) => updateHypotheses(args),
+  gsheets_update_hypotheses: (args: any) => updateHypotheses({ results: args.results || [] }),
   slack_send_notification: (args: any) => sendSlackNotification(args),
 };
 

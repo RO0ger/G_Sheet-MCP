@@ -93,7 +93,7 @@ export class MeetingProcessor {
 
       // 4. Send Notification
       const duration = Date.now() - startTime;
-      const summary = { // This can be simplified as we're not scoring anymore
+      const summary = {
           meetingId,
           totalHypotheses: hypotheses.length,
           processedCount: allResults.length,

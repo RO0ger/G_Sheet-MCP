@@ -47,6 +47,11 @@ export async function loadHypotheses(): Promise<any[]> {
 
       // Define our expected headers. This makes the check robust.
       const expectedHeaders = ['Problem Title', 'Hypothesis', 'Questions to Ask in Meeting'];
+      
+      // Log the headers we found for debugging
+      logger.info(`Headers found in sheet "${title}": [${cleanedHeaders.join(', ')}]`);
+      logger.info(`Expected headers: [${expectedHeaders.join(', ')}]`);
+
       if (expectedHeaders.every(h => cleanedHeaders.includes(h))) {
         logger.success(`Found valid hypotheses sheet: "${title}"`);
         hypothesesSheetTitle = title;
@@ -117,49 +122,58 @@ export async function updateHypotheses({ results }: { results: any[] }): Promise
     throw new Error('Could not find "ID" column in the sheet.');
   }
 
-  // Create a map of row content to its index (1-based for A1 notation)
-  const rowMap = new Map<string, { data: any[], index: number }>();
+  // Create a map of ID to row number (1-based for Google Sheets)
+  const idToRowMap = new Map<string, number>();
   rows.slice(1).forEach((row, i) => {
     const id = row[idColumnIndex];
     if (id) {
-      rowMap.set(id, { data: row, index: i + 2 }); // +2 because of 0-based index and 1-based header
+      idToRowMap.set(id, i + 2); // +2 because: +1 for header row, +1 for 1-based indexing
     }
   });
 
   // These are the headers we expect to update, in the correct order.
-  const updateHeaders = ['Pain', 'Status', 'Deployments', 'Confidence', 'Quote 1', 'Quote 2', 'Possible Fix', 'Scale Risk'];
-  const columnIndexes = updateHeaders.map(h => headers.indexOf(h));
-  if (columnIndexes.some(i => i === -1)) {
-    throw new Error(`One of the required columns for updating was not found. Required: ${updateHeaders.join(', ')}`);
-  }
-  const firstUpdateColumn = String.fromCharCode(65 + Math.min(...columnIndexes));
-  const lastUpdateColumn = String.fromCharCode(65 + Math.max(...columnIndexes));
+  const updateHeaders = ['Pain', 'Status', 'Deployments', 'Confidence', 'Confidence %', 'Quote 1', 'Quote 2', 'Possible Fix', 'Scale Risk'];
 
+  // Get the column letters for each header we want to update
+  const headerToColumnMap = new Map<string, string>();
+  updateHeaders.forEach(header => {
+    const columnIndex = headers.indexOf(header);
+    if (columnIndex === -1) {
+      throw new Error(`Could not find "${header}" column in the sheet.`);
+    }
+    const columnLetter = String.fromCharCode(65 + columnIndex);
+    headerToColumnMap.set(header, columnLetter);
+  });
+
+  // Prepare individual cell updates for each result
   const dataUpdatePayload: any[] = [];
   for (const result of results) {
-    const rowInfo = rowMap.get(result.hypothesis_id);
-    if (!rowInfo) {
-      logger.warn(`Could not find row with ID: ${result.hypothesis_id} in the sheet. Skipping update.`);
+    const rowNumber = idToRowMap.get(result.hypothesis_id);
+    if (!rowNumber) {
+      logger.warn(`Could not find row for ID: ${result.hypothesis_id} in the sheet. Skipping update.`);
       continue;
     }
-    
-    // Construct the data to write for this row
-    const dataToWrite = headers.map(() => ''); // Start with an empty array
-    updateHeaders.forEach((header, i) => {
-      dataToWrite[columnIndexes[i]] = result.analysis[header] || '';
-    });
-    
-    dataUpdatePayload.push({
-      range: `${sheetTitle}!A${rowInfo.index}`, // Update the whole row to be safe
-      values: [dataToWrite],
+
+    // Create individual cell updates for each analysis field
+    updateHeaders.forEach(header => {
+      const columnLetter = headerToColumnMap.get(header);
+      const value = result.analysis[header] || '';
+      
+      if (columnLetter) {
+        dataUpdatePayload.push({
+          range: `${sheetTitle}!${columnLetter}${rowNumber}`,
+          values: [[value]], // Single cell value wrapped in array
+        });
+      }
     });
   }
 
   if (dataUpdatePayload.length === 0) {
-    logger.warn('No valid rows found to update.');
+    logger.warn('No valid updates to perform.');
     return { success: true };
   }
 
+  // Perform batch update with individual cell ranges
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
@@ -168,7 +182,7 @@ export async function updateHypotheses({ results }: { results: any[] }): Promise
     },
   });
 
-  logger.success(`Successfully updated ${dataUpdatePayload.length} hypotheses.`);
+  logger.success(`Successfully updated ${dataUpdatePayload.length} cells across ${results.length} hypotheses.`);
   return { success: true };
 }
 
