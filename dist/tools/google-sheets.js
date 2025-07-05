@@ -63,6 +63,12 @@ export async function loadHypotheses() {
             logger.warn('No hypotheses found in the sheet.');
             return [];
         }
+        logger.info(`=== GSHEETS DEBUG ===`);
+        logger.info(`Total rows loaded: ${rows.length}`);
+        rows.forEach((row, index) => {
+            logger.info(`Row ${index}: ${JSON.stringify(row)}`);
+        });
+        logger.info(`=== END GSHEETS DEBUG ===`);
         // Clean the headers to ensure consistent mapping
         const headers = rows[0].map(h => (typeof h === 'string' ? h.trim() : h));
         const hypotheses = rows.slice(1).map(row => {

@@ -13,9 +13,8 @@
     - It loads the latest hypotheses from a configured Google Sheet.
 4.  **AI Processing**:
     - For each hypothesis, the orchestrator calls the Gemini API.
-    - **Quote Extraction**: Identifies relevant quotes from the transcript that support or contradict the hypothesis.
-    - **Hypothesis Scoring**: Scores the hypothesis based on the extracted quotes.
-5.  **Output**: The orchestrator writes the detailed results (scores, quotes, reasoning) to a new, timestamped tab in the Google Sheet.
+    - **Hypothesis Analysis**: For each hypothesis, Gemini analyzes the transcript to determine pain points, status, confidence, and relevant quotes.
+5.  **Output**: The orchestrator updates each hypothesis row in-place with the analysis results (pain, status, quotes, etc.) in the original Google Sheet.
 6.  **Notification**: A summary notification is sent to a configured Slack channel to report the successful completion of the analysis.
 
 ## Configuration-First Architecture
@@ -215,7 +214,7 @@ export interface SlackFormatter {
 export interface ProcessingSummary {
   meetingId: string;
   totalHypotheses: number;
-  validations: number;
+  processedCount: number;
   duration: number;
   processedAt: string;
 }
@@ -223,20 +222,10 @@ export interface ProcessingSummary {
 class DefaultSlackFormatter implements SlackFormatter {
   formatProcessingComplete(summary: ProcessingSummary) {
     return {
-      text: `Meeting ${summary.meetingId} analysis complete`,
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `*Meeting Analysis Complete*\n` +
-                  `Meeting: ${summary.meetingId}\n` +
-                  `Hypotheses: ${summary.totalHypotheses}\n` +
-                  `Validations: ${summary.validations}\n` +
-                  `Duration: ${(summary.duration / 1000).toFixed(1)}s`
-          }
-        }
-      ]
+      text: `*✅ Meeting Analysis Complete*\n\n` +
+            `*Meeting:* ${summary.meetingId}\n` +
+            `*Hypotheses Analyzed:* ${summary.processedCount} / ${summary.totalHypotheses}\n` +
+            `*Duration:* ${(summary.duration / 1000).toFixed(1)}s`
     };
   }
 
@@ -256,54 +245,57 @@ export const slackFormatter: SlackFormatter = new DefaultSlackFormatter();
 ```
 src/
 ├── config/
-│   └── index.ts           # All configuration
-├── utils/
-│   ├── logger.ts          # Logging abstraction
-│   └── formatters.ts      # Message formatting
+│   └── index.ts
+├── orchestrator.ts
 ├── prompts/
-│   ├── quote-extraction.txt
+│   ├── hypothesis-enrichment.txt
 │   ├── hypothesis-scoring.txt
-│   └── index.ts           # Prompt manager
+│   ├── index.ts
+│   └── quote-extraction.txt
+├── public/
+│   └── index.html
+├── server.ts
 ├── tools/
-│   └── [tool files]
-├── mcp-server.ts
-└── orchestrator.ts
+│   ├── gemini.ts
+│   ├── google-sheets.ts
+│   ├── index.ts
+│   └── slack.ts
+├── types/
+└── utils/
+    ├── api-client.ts
+    ├── formatters.ts
+    └── logger.ts
 ```
 
-**mcp-server.ts (configurable):**
+**MCP Server (Implemented in server.ts):**
 ```typescript
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import express from 'express';
 import { config } from './config/index.js';
 import { logger } from './utils/logger.js';
+import { handleToolCall } from './tools/index.js';
+import { MeetingProcessor } from './orchestrator.js';
 
-const server = new Server(
-  { name: 'meeting-evaluator', version: '1.0.0' },
-  { capabilities: { tools: {} } }
-);
+const app = express();
+app.use(express.json());
 
-// Tools registration (same structure, but use config)
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'grain_get_transcript',
-      description: 'Fetch meeting transcript from Grain API',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          meeting_id: { type: 'string' },
-          timeout: { type: 'number', default: config.apis.grain.timeout }
-        },
-        required: ['meeting_id']
-      }
-    },
-    // ... other tools with configurable schemas
-  ]
-}));
-
-logger.info('MCP server initialized', {
-  toolCount: 6,
-  grainTimeout: config.apis.grain.timeout
+// MCP Endpoint for tool calls
+app.post('/mcp', async (req, res) => {
+  const { method, params, id } = req.body;
+  if (method === 'tools/call') {
+    const result = await handleToolCall(params.name, params.arguments || {});
+    res.status(200).json({ jsonrpc: '2.0', id, result });
+  }
+  // ... other JSON-RPC methods
 });
+
+// Webhook for starting a workflow
+app.post(config.server.webhookPath, (req, res) => {
+  const { transcript, meeting_id } = req.body;
+  new MeetingProcessor().processWorkflowWithTranscript(transcript, meeting_id);
+  res.status(202).send({ message: 'Processing started' });
+});
+
+logger.info(`Server initialized, listening on port ${config.server.port}`);
 ```
 
 **Test with config:**
@@ -336,21 +328,18 @@ if (request.params.name === 'gsheets_load_hypotheses') {
   return { content: [{ type: 'text', text: JSON.stringify(hypotheses) }] };
 }
 
-if (request.params.name === 'gsheets_write_results') {
+if (request.params.name === 'gsheets_update_hypotheses') {
   const { results, sheet_id } = request.params.arguments as {
-    results: Result[],
+    results: any[],
     sheet_id?: string
   };
   const spreadsheetId = sheet_id || config.apis.google.spreadsheetId;
 
-  const timestamp = new Date().toISOString();
-  const newSheetTitle = `Results @ ${timestamp}`;
+  logger.info('Updating hypotheses in-place', { resultCount: results.length });
 
-  logger.info('Writing results to new sheet', { newSheetTitle, resultCount: results.length });
+  // ... googleapis implementation to update rows cell-by-cell...
 
-  // ... googleapis implementation to create new sheet and write ...
-
-  logger.success('Results written', { newSheetTitle });
+  logger.success('Hypotheses updated');
 }
 ```
 
@@ -392,20 +381,19 @@ import { ApiClient } from '../utils/api-client.js';
 
 const apiClient = new ApiClient();
 
-if (request.params.name === 'gemini_extract_quotes') {
+if (request.params.name === 'gemini_analyze_hypothesis') {
   const { transcript, hypothesis } = request.params.arguments as {
     transcript: string;
-    hypothesis: Hypothesis;
+    hypothesis: { id: string, description: string };
   };
 
-  const promptTemplate = await promptManager.getPrompt('quote-extraction');
+  const promptTemplate = await promptManager.getPrompt('hypothesis-enrichment');
   const prompt = promptManager.fillTemplate(promptTemplate, {
     hypothesis_description: hypothesis.description,
-    test_questions: hypothesis.test_questions.join(', '),
     transcript: transcript
   });
 
-  const quotes = await apiClient.callWithRetry('Gemini Quote Extraction', async () => {
+  const analysis = await apiClient.callWithRetry('Gemini Hypothesis Analysis', async () => {
     const response = await fetch(`${config.apis.gemini.baseUrl}/v1beta/models/${config.apis.gemini.model}:generateContent`, {
       method: 'POST',
       headers: {
@@ -422,8 +410,8 @@ if (request.params.name === 'gemini_extract_quotes') {
     return JSON.parse(data.candidates[0].content.parts[0].text);
   });
 
-  logger.success('Quotes extracted', { count: quotes.length, hypothesisId: hypothesis.id });
-  return { content: [{ type: 'text', text: JSON.stringify(quotes) }] };
+  logger.success('Hypothesis analyzed', { hypothesisId: hypothesis.id });
+  return { content: [{ type: 'text', text: JSON.stringify(analysis) }] };
 }
 ```
 
@@ -461,18 +449,16 @@ if (request.params.name === 'slack_send_notification') {
 
 ## Hour 6: Configurable Webhook Server
 
-```typescript
-// webhook.ts
+```typitten
+// server.ts (showing webhook logic)
 import express from 'express';
 import { config } from './config/index.js';
 import { logger } from './utils/logger.js';
 import { MeetingProcessor } from './orchestrator.js';
 
 const app = express();
-app.use(express.json({ limit: '50mb' })); // Allow larger transcript payloads
-app.use(express.static('public')); // Serve the HTML interface
+app.use(express.json());
 
-// Concurrent processing limiter
 const activeProcessing = new Set<string>();
 
 app.get('/health', (req, res) => {
@@ -505,7 +491,7 @@ app.post(config.server.webhookPath, async (req, res) => {
   }
 
   activeProcessing.add(id);
-  res.status(200).json({ message: 'Processing started', meeting_id: id });
+  res.status(202).json({ message: 'Processing started', meeting_id: id });
 
   // Process with timeout
   const processor = new MeetingProcessor();
@@ -519,7 +505,7 @@ app.post(config.server.webhookPath, async (req, res) => {
 
     // The orchestrator now receives the transcript directly
     await Promise.race([
-      processor.processWorkflow(transcript, id),
+      processor.processWorkflowWithTranscript(transcript, id),
       timeoutPromise
     ]);
 
@@ -560,9 +546,9 @@ const testCases: TestCase[] = [
     name: 'Google Sheets Load Hypotheses',
     method: 'tools/call',
     params: { name: 'gsheets_load_hypotheses', arguments: { sheet_id: config.apis.google.spreadsheetId }},
-    expectedFields: ['id', 'description']
+    expectedFields: ['ID', 'Hypothesis']
   }
-  // Note: Removed 'Grain Transcript Fetch' test case as the tool is no longer needed.
+  // Note: Test cases should be updated to reflect the single 'gemini_analyze_hypothesis' tool.
 ];
 
 export class TestRunner {
@@ -619,7 +605,7 @@ PROCESSING_TIMEOUT=300000
 
 **✅ Scalability:**
 - Concurrent processing limits
-- Unique result sheets prevent collisions
+- In-place updates are atomic per row.
 - Timeout protection
 
 **✅ Maintainability:**

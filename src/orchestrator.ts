@@ -82,6 +82,12 @@ export class MeetingProcessor {
           }
         });
         
+        logger.info(`=== GEMINI ANALYSIS DEBUG ===`);
+        logger.info(`Hypothesis ID: ${hypothesis.ID}`);
+        logger.info(`Analysis keys: ${Object.keys(analysis || {})}`);
+        logger.info(`Analysis content: ${JSON.stringify(analysis, null, 2)}`);
+        logger.info(`=== END DEBUG ===`);
+
         allResults.push({
           hypothesis_id: hypothesis.ID,
           analysis,
@@ -89,6 +95,10 @@ export class MeetingProcessor {
       }
 
       // 3. Write all results back to Google Sheets in one batch
+      logger.info(`About to update ${allResults.length} results`);
+      allResults.forEach((result, index) => {
+        logger.info(`Result ${index}: hypothesis_id=${result.hypothesis_id}, analysis keys=${Object.keys(result.analysis || {})}`);
+      });
       await this.callTool('gsheets_update_hypotheses', { results: allResults });
 
       // 4. Send Notification

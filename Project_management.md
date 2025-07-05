@@ -6,26 +6,25 @@
 2.  **Trigger**: The frontend `POST`s the transcript to the `/meeting-ended` webhook.
 3.  **Orchestration**: The `MeetingProcessor` loads hypotheses from Google Sheets.
 4.  **AI Processing**: For each hypothesis, Gemini extracts quotes and generates a score based on the provided transcript.
-5.  **Output**: Results are written to a new tab in the Google Sheet.
+5.  **Output**: Results are updated in-place for each hypothesis row in the original Google Sheet.
 6.  **Notification**: A success message is sent to Slack.
 
-## MCP MVP: 5 Tools, Zero Hardcoding, 7 Hours
+## MCP MVP: 4 Tools, Zero Hardcoding, 7 Hours
 
 **Core:** MCP server with configurable tools → Everything else is just plumbing
 
 ```
-MCP Tools (5):
+MCP Tools (4):
 ├── gsheets_load_hypotheses
-├── gsheets_write_results
-├── gemini_extract_quotes
-├── gemini_score_hypothesis
+├── gsheets_update_hypotheses
+├── gemini_analyze_hypothesis
 └── slack_send_notification
 ```
 
 ## Hour-by-Hour: MCP Tool Development
 
 ### Hours 1-2: Config + Foundation MCP Tools
-**Target:** 1/5 tools working with config system
+**Target:** 1/4 tools working with config system
 
 ```typescript
 // config/index.ts - Exactly as PRD specifies
@@ -48,32 +47,29 @@ export const config: AppConfig = {
 **Test:** MCP server responds to ListTools, `gsheets_load_hypotheses` executes successfully.
 
 ### Hour 3: Google Sheets Tools Complete
-**Target:** 3/5 tools working
+**Target:** 2/4 tools working
 
 **MCP Tools Built:**
-- [x] `gsheets_write_results` - Write to Google Sheet using config.apis.google.spreadsheetId
-- [x] PRD requirement: Generate unique sheet title with timestamp to prevent collisions
+- [x] `gsheets_update_hypotheses` - Updates rows in-place in the Google Sheet using config.apis.google.spreadsheetId
 
-**Sheet naming exactly as PRD:**
+**Update logic:**
 ```typescript
-const timestamp = new Date().toISOString();
-const newSheetTitle = `Results @ ${timestamp}`;
+// Performs a batch update of individual cells to preserve
+// existing data and only write analysis results.
 ```
 
 ### Hour 4: Gemini Tools with Prompts
-**Target:** 5/5 tools complete
+**Target:** 3/4 tools complete
 
 **Prompt System (exactly PRD structure):**
 ```
 prompts/
-├── quote-extraction.txt
-├── hypothesis-scoring.txt  
+├── hypothesis-enrichment.txt
 └── index.ts (PromptManager)
 ```
 
 **MCP Tools Built:**
-- [x] `gemini_extract_quotes` - Uses prompts/quote-extraction.txt template
-- [x] `gemini_score_hypothesis` - Uses prompts/hypothesis-scoring.txt template
+- [x] `gemini_analyze_hypothesis` - Uses prompts/hypothesis-enrichment.txt template
 
 **Retry logic as PRD specifies:**
 ```typescript
@@ -82,13 +78,13 @@ retryDelay: config.apis.gemini.retryDelay
 ```
 
 ### Hour 5: Slack Tool + Testing
-**Target:** All 5 tools tested end-to-end
+**Target:** All 4 tools tested end-to-end
 
 **MCP Tools Complete:**
 - [x] `slack_send_notification` - Uses config.apis.slack.webhookUrl
 - [x] Message formatting exactly as PRD slackFormatter interface
 
-**Test all 5 tools:**
+**Test all 4 tools:**
 ```bash
 echo '{"method": "tools/call", "params": {"name": "gsheets_load_hypotheses"}}' | node mcp-server.js
 ```
@@ -99,35 +95,34 @@ echo '{"method": "tools/call", "params": {"name": "gsheets_load_hypotheses"}}' |
 ```typescript
 // orchestrator.ts - Chain MCP tool calls
 export class MeetingProcessor {
-  async processWorkflow(transcript: string, meetingId: string) {
+  async processWorkflowWithTranscript(transcript: string, meetingId: string) {
     const hypotheses = await this.callTool('gsheets_load_hypotheses', {});
     
-    const results = [];
+    const allResults = [];
     for (const hypothesis of hypotheses) {
-      const quotes = await this.callTool('gemini_extract_quotes', { transcript, hypothesis });
-      const score = await this.callTool('gemini_score_hypothesis', { hypothesis, quotes });
-      results.push({ hypothesis_id: hypothesis.id, score, quotes });
+      const analysis = await this.callTool('gemini_analyze_hypothesis', { transcript, hypothesis });
+      allResults.push({ hypothesis_id: hypothesis.ID, analysis });
     }
     
-    await this.callTool('gsheets_write_results', { results });
+    await this.callTool('gsheets_update_hypotheses', { results: allResults });
     
-    const results_summary = { meetingId, totalHypotheses: hypotheses.length, ... };
-    await this.callTool('slack_send_notification', { results_summary });
+    const summary = { meetingId, totalHypotheses: hypotheses.length, ... };
+    await this.callTool('slack_send_notification', { summary });
   }
 }
 ```
 
-### Hour 7: Webhook + Production Ready
+### Hour 7: MCP Server Endpoint (Webhook)
 **Target:** HTTP webhook triggers MCP orchestrator
 
 ```typescript
-// webhook.ts - Express server exactly as PRD
+// server.ts - Unified Express server
 app.post(config.server.webhookPath, async (req, res) => {
   const { transcript, meeting_id } = req.body;
   const processor = new MeetingProcessor();
   // Note: Production features like concurrency and timeout handling are omitted for brevity
-  await processor.processWorkflow(transcript, meeting_id || `meeting-${Date.now()}`);
-  res.status(200).json({ message: 'Processing started' });
+  await processor.processWorkflowWithTranscript(transcript, meeting_id || `meeting-${Date.now()}`);
+  res.status(202).json({ message: 'Processing started' });
 });
 ```
 
@@ -141,7 +136,7 @@ Each tool must handle errors exactly as PRD specifies:
 **Google Sheets Tools:**
 - Must use `googleapis` library.
 - Must handle API permissions/authentication errors.
-- Must generate unique sheet titles for concurrent writes.
+- Must update cells in-place to avoid data loss.
 
 **Gemini Tools:**  
 - Must use external prompt files from prompts/ directory
@@ -155,7 +150,7 @@ Each tool must handle errors exactly as PRD specifies:
 ## Quality Gates (MCP-Focused)
 
 **Hour 2:** 1 MCP tool responds correctly
-**Hour 4:** All 5 MCP tools work individually  
+**Hour 4:** All 4 MCP tools work individually  
 **Hour 6:** MCP tool chain completes full workflow
 **Hour 7:** Webhook triggers MCP workflow successfully
 
@@ -163,30 +158,40 @@ Each tool must handle errors exactly as PRD specifies:
 
 ```
 src/
-├── config/index.ts          # AppConfig interface exactly as PRD
-├── utils/
-│   ├── logger.ts            # Logger interface as PRD  
-│   └── formatters.ts        # SlackFormatter as PRD
+├── config/
+│   └── index.ts
+├── orchestrator.ts
 ├── prompts/
-│   ├── quote-extraction.txt # Exact PRD template
-│   ├── hypothesis-scoring.txt # Exact PRD template  
-│   └── index.ts             # PromptManager as PRD
-├── mcp-server.ts            # 5 tools, ListTools handler
-├── orchestrator.ts          # MeetingProcessor class
-└── webhook.ts               # Express server
+│   ├── hypothesis-enrichment.txt
+│   ├── hypothesis-scoring.txt
+│   ├── index.ts
+│   └── quote-extraction.txt
+├── public/
+│   └── index.html
+├── server.ts
+├── tools/
+│   ├── gemini.ts
+│   ├── google-sheets.ts
+│   ├── index.ts
+│   └── slack.ts
+├── types/
+└── utils/
+    ├── api-client.ts
+    ├── formatters.ts
+    └── logger.ts
 ```
 
 ## Success Criteria
 
 **MCP MVP Working:**
 ```bash
-# All 5 tools listed
+# All 4 tools listed
 echo '{"method": "tools/list"}' | node mcp-server.js
 
 # Full workflow via webhook  
 curl -X POST localhost:8080/meeting-ended -H "Content-Type: application/json" -d '{"transcript": "Speaker 1: I think this is a great idea. Speaker 2: I disagree."}'
 # → Processes meeting via MCP tool chain
-# → Writes Google Sheet results with timestamp
+# → Updates Google Sheet rows in-place
 # → Sends Slack notification
 ```
 
