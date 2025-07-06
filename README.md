@@ -29,13 +29,11 @@ This project is a TypeScript-based application that integrates with Google Sheet
     ```
 
 3.  **Set up environment variables:**
-    Create a `.env` file in the root of the project and add the necessary environment variables.
+    Copy the example environment file and fill in your credentials.
+    ```bash
+    cp .env.example .env
     ```
-    # .env
-    GOOGLE_API_KEY=your_google_api_key
-    SLACK_BOT_TOKEN=your_slack_bot_token
-    # ... any other variables
-    ```
+    Now, open the `.env` file and add your secret credentials.
 
 4.  **Build the project:**
     ```bash
